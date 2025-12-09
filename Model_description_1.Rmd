@@ -1,0 +1,389 @@
+---
+title: "Spatio-Temporal Model for Sri Lanka Crime Data"
+output: html_document
+header-includes:
+  - \usepackage{amsmath}
+  - \usepackage{amssymb}
+  - \usepackage{mathtools}
+---
+
+## Data
+
+In this setting we have Crime incidents of Sri Lanka from 2019-01-01 to 2023-12-31. 
+We organise this dataset for modeling purposes such that weekly crime counts of each 
+Divisional Secretariat (DS) Division of Sri Lanka.
+
+
+```{r data, echo=TRUE, warning=FALSE, message=FALSE}
+crime_weekly <- readRDS("crime_weekly.rds")
+str(crime_weekly)
+```
+
+## Areal data
+
+Areal or lattice data arise when a fixed domain is partitioned into a finite number of sub-regions at which outcomes are aggregated. Our dataset is a classic case of temporal areal data, which are commonly modeled using adjacency graph. Borders of Sri Lanka divisional secretariats divisions can be seen as follows.
+
+
+```{r ds_plot, echo=TRUE, warning=FALSE, message=FALSE}
+library(sf)
+library(dplyr)
+library(tmap)
+
+path <- "C:/Users/oshad/OneDrive/Documents/R/SriLanka_Admin_Boundaries"
+#path <- "C:/Users/n12300306/OneDrive - Queensland University of Technology/Documents/SriLanka_Admin_Boundaries"
+adm3_sf <- st_read(file.path(path, "lka_admbnda_adm3_slsd_20220816.shp"))  # DS Division
+
+adm3_sf <- adm3_sf %>% 
+  select(-ADM3_SI, -ADM3_TA, -ADM2_SI, -ADM2_TA, 
+         -ADM2_PCODE, -ADM1_SI, -ADM1_TA, -ADM1_PCODE, -ADM0_EN,
+         -ADM0_SI, -ADM0_TA, -ADM0_PCODE, -date, -validOn, -validTo) %>%
+  rename(area = ADM3_EN)  #remove unwanted columns and rename area column
+
+# Ensure order and geometry validity
+adm3_sf <- adm3_sf %>%
+  st_make_valid() %>%
+  arrange(area)
+
+# check for alignment to make sure areas match in both datasets
+check_id = crime_weekly[1:339,c(1,19)]
+check_id$sf_name=adm3_sf$area
+identical(check_id$area, check_id$sf_name) #if TRUE ids match
+
+tmap_mode("view")
+
+tm_shape(adm3_sf) +
+  tm_polygons(
+    col = "ADM1_EN",       # Province colour
+    border.col = "grey40",
+    alpha = 0.6,
+    id = "area",           # hover label
+    popup.vars = c("ADM2_EN", "ADM1_EN")
+  ) +
+  tm_view(set.view = c(80.7, 7.8, 8))
+
+#plot(st_geometry(adm3_sf), border = "grey75", main = "Divisional Secretariat Divisions of Sri Lanka")
+```
+
+## Adjacency Graph
+
+We build an adjacency graph where only divisions that share a border is considered neighbours. There is a one division that is island which not connected to mainland, this division was manually assigned to nearest DS divisions according to the shortest distance. Furthermore, there were two more divisions with only one neighbor (enclaves), to keep the consistency of at least two neighbors, another DS division (not share border) with shortest distance those DS were connected. We can visualize the adjacency graph below. 
+
+```{r adjgraph, eval=FALSE, echo=TRUE, warning=FALSE, message=FALSE}
+library(spdep)
+library(INLA)
+
+# Create neighbor list and graph
+nb <- poly2nb(adm3_sf, queen = TRUE)
+# Get center points of each area
+pts <- st_point_on_surface(st_geometry(adm3_sf))
+
+
+# manually adding edges
+dym <- c(st_distance(adm3_sf[c(48),], adm3_sf))
+sort(dym)[1:12]
+closest = order(dym)[1:3]
+nb_1 <- addlinks1(nb, from = closest[1], to = closest[2:3])
+
+
+dym2 <- c(st_distance(adm3_sf[c(118),], adm3_sf))
+closest = order(dym2)[1:3]
+nb_2 <- addlinks1(nb_1, from = closest[1], to = closest[3])
+
+dym3 <- c(st_distance(adm3_sf[c(66),], adm3_sf))
+closest = order(dym3)[1:3]
+nb_3 <- addlinks1(nb_2, from = closest[2], to = closest[3])
+
+tmap_mode("view")
+
+nb_lines <- spdep::nb2lines(nb_3, coords = pts, as_sf = TRUE)
+tm_shape(adm3_sf) +
+  tm_polygons(
+    col = "ADM1_EN",       # province colour
+    border.col = "grey50",
+    alpha = 0.6,
+    id = "area",
+    popup.vars = c("ADM2_EN", "ADM1_EN")
+  ) +
+  tm_shape(nb_lines) +
+  tm_lines(col = "darkred", lwd = 1) +
+  tm_shape(pts) +
+  tm_dots(size = 0.05, col = "black")
+
+# Save the graph as INLA graph for modelling
+nb2INLA("adm3.adj", nb_3)
+```
+
+## Model Specification
+
+## Observation Model
+
+For area \(i = 1,\dots,I\), (here \(I=339\)) and week \(t = 1,\dots,T\), (here \(T=261\)), the observed crime count
+\[
+  Y_{it}
+  \]
+is assumed to follow a Poisson likelihood:
+  \[
+    Y_{it} \mid \lambda_{it} \sim \text{Poisson}(\lambda_{it}),
+    \]
+with log-link:
+  \[
+    \log \lambda_{it} = \eta_{it}.
+    \]
+
+The linear predictor is:
+\begin{equation}
+  
+    \eta_{it}
+    = \beta_0 
+    + \beta_1 \, \text{density}_{i}
+    + \beta_2 \, \text{infl}_{t}
+    + \beta_3 \, \text{temp}_{it}
+    + \beta_4 \, \text{rain}_{it}
+    + s_i
+    + \gamma_t
+    + \delta_{it'}
+    + \epsilon_{it}
+    
+\end{equation}
+
+where \(\beta_0\) is the intercept, \(\beta_0,\beta_1,\beta_2,\beta_3,\beta_4\) are coefficients of the random effects, which are population density (spatial only variable), inflation index (temporal only variable), temperature and rainfall (spatio-temporal variables) respectively. In addition, \(s_i,\gamma_t \,\delta_{it'}\) are the spatial random effects, temporal random effects and spatio-temporal random effects respectively. Note that in the spatio-temporal random effects, time index is adjusted from weekly to four weeks, hence \(t'\) is used there. In addition, we add a Gaussian nugget term form each observation. We will now look at each random effects in the model in more detail.
+
+We are using R INLA package (reference) to fit the above model. It uses integrated nested laplacian approximation to estimate the parameters (fixed and random effects) and hyper-parameters of the model. To estimate random effects, INLA consider these to follow gaussian random markow field (GRMF), which indicate that observation is only related to its neighbors (two observations are independent if they are not neighbors).
+
+---
+## Spatial Random Effects: BYM2
+
+The BYM2 (add reference) spatial effect is defined as a scaled combination of a structured Intrinsic Conditional Auto-regressive (ICAR) (Besag reference) component and an unstructured independent and identically distributed (iid) component:
+
+\[
+s_i = \frac{1}{\sqrt{\tau_s}}
+\left( 
+\sqrt{1-\phi}\, v_i 
++ 
+\sqrt{\phi}\, u_i
+\right),
+\]
+where:
+
+- \(u_i\) is the structured spatial effect,  
+- \(v_i \sim \mathcal{N}(0,1)\) are iid Gaussian.
+- \(\tau_s\) is the marginal precision of \(s_i\).
+- \(\phi \in (0,1)\) controls the proportion of structured spatial variance.
+
+Let \(U= (u_1,u_2,...u_{339}) \sim \mathcal{N}(0, Q_{\text{ICAR}}^{-1}) \) and 
+\(V= (v_1,v_2,...v_{339}) \sim \mathcal{N}(0,I) \).
+
+We define cell entries of precision matrix of \( Q_{ICAR} \) as below.
+
+\[Q_{\text{ICAR}}(i,j)
+    =
+      \begin{cases}
+    n_i, & i = j, \\[4pt]
+    -1,  & i \sim j \quad \text{(neighbors)}, \\[4pt]
+    0,   & \text{otherwise},
+    \end{cases}\]
+    
+where \( n_i \) is the number of neighbors of area \( i \).
+
+Combining these, \(S=(s_1,s_2,...s_{339}) \sim \mathcal{N}(0, Q_{\text{BYM2}}^{-1}) \)
+
+Where 
+\[
+  \boxed{
+    Q_{\text{BYM2}}
+    =
+      \tau \left(
+        \phi \, Q_{\text{ICAR}} + (1-\phi) I_N
+        \right)
+  }
+  \]
+
+We set penalize complexity priors for \(\phi\) and \(\tau\) according to (give reference)
+
+```{r prior, eval=FALSE, echo=TRUE, warning=FALSE, message=FALSE}
+library(INLA)
+hyper_bym2 <- list(
+  phi  = list(prior = "pc", param = c(0.5, 2/3)),      # mixing BYM2 structured/unstructured
+  prec = list(prior = "pc.prec", param = c(1, 0.01))   # base precision
+)
+```
+
+PC priors:
+\[
+\phi \sim \text{PC}(\text{practical~info: } P(\phi > 0.5)=2/3), \quad
+\tau_s \sim \text{PC.prec}(1, 0.01).
+\]
+
+## Temporal Random Effects: RW1
+
+The weekly temporal effect follows a first-order random walk:
+\[
+\gamma_t - \gamma_{t-1} \mid \tau_\gamma \sim 
+\mathcal{N}(0, \tau_\gamma^{-1}), \quad t=2,\dots,T(=261).
+\]
+
+Where \(\tau_\gamma\) is variance of \(\gamma_t- \gamma_{t-1}\)
+
+Let  \(\gamma= (\gamma_1,\gamma_2,...\gamma_{261}) \sim \mathcal{N}(0, Q_{\text{RW1}}^{-1}) \) 
+
+Where 
+\[
+Q_{\text{RW1}}
+=
+\tau_\gamma
+\begin{pmatrix}
+1 & -1 & 0 & \cdots & 0 \\
+-1 & 2 & -1 & \cdots & 0 \\
+0 & -1 & 2 & \cdots & 0 \\
+\vdots & \vdots & \vdots & \ddots & -1 \\
+0 & 0 & 0 & -1 & 1 
+\end{pmatrix}.
+\]
+
+\(\tau_\gamma\) is a hyper-parameter that INLA estimate, we let the default values be the prior here.
+
+## Spatio-Temporal Interaction
+
+The interaction effect \(\delta_{i,t'}\) is modeled using Spatial Besag structure and Temporal AR(1) structure. We combine these two structures using a **Kronecker product**. 
+
+Let \( \delta = (\delta_{1,1},\delta_{2,1},...,\delta_{339,1},\delta_{1,2},...\delta_{339,66}) \sim \mathcal{N}\left(0,\;Q_{\text{ST}}^{-1}\right) \) 
+
+with precision:
+\[
+Q_{\text{ST}} 
+= 
+\tau_\delta \;
+\left( 
+Q_{\text{AR1}}(\rho) 
+\;\otimes\;
+Q_{\text{ICAR}}(\tau)
+\right),
+\]
+where \(\otimes\) denotes the Kronecker product.
+
+Note that we can give the \( Q_{ICAR} = \tau*Q_{ij}\) where \( Q_{ij}\) matrix elements are defined as above. We can define the \( Q_{AR1}\) as below.
+
+\[
+Q_{\text{AR1}}
+=
+\frac{1}{1-\rho^2}
+\begin{pmatrix}
+1 & -\rho & 0 & \cdots & 0 \\
+-\rho & 1+\rho^2 & -\rho & \cdots & 0 \\
+0 & -\rho & 1+\rho^2 & \cdots & 0 \\
+\vdots & \vdots & \vdots & \ddots & -\rho \\
+0 & 0 & 0 & -\rho & 1 
+\end{pmatrix}.
+\]
+
+Here \( \rho \) is the auto-correlation of AR(1) model. Note that AR1 model can be defined as \(Y_t=\rho Y_{t-1}+\epsilon_{t}\) where \(\epsilon_{t} \sim (0,\sigma^2)\)
+
+Therefore 
+
+\[
+Q_{\text{ST}}
+=
+\frac{1}{1-\rho^2}
+\begin{pmatrix}
+Q_{ICAR} & -\rho*Q_{ICAR} & 0 & \cdots & 0 \\
+-\rho*Q_{ICAR} & (1+\rho^2)*Q_{ICAR} & -\rho*Q_{ICAR} & \cdots & 0 \\
+0 & -\rho*Q_{ICAR} & (1+\rho^2)*Q_{ICAR} & \cdots & 0 \\
+\vdots & \vdots & \vdots & \ddots & -\rho*Q_{ICAR} \\
+0 & 0 & 0 & -\rho*Q_{ICAR} & Q_{ICAR} 
+\end{pmatrix}.
+\]
+
+Here \( \tau \) and \( \rho \) are hyper-parameters that INLA estimates. We set the \( \tau \) for defaults but give a penalized complexity prior for \( \rho \).
+
+```{r arprior, eval=FALSE, echo=TRUE, warning=FALSE, message=FALSE}
+h.spec <- list(rho = list(prior = 'pc.cor1', param = c(0, 0.9)))
+
+```
+
+PC prior for AR(1) correlation:
+\[
+\rho \sim \text{PC-cor1}(0, 0.9).
+\]
+
+## Observation-Level White Noise (Gaussian Nugget)
+
+An iid noise term is also added to capture unstructured variability at each observation:
+\[
+\epsilon_{it} \mid \tau_\epsilon 
+\sim 
+\mathcal{N}(0, \tau_\epsilon^{-1}),
+\]
+Here \(\tau_\epsilon\) is the variance of the error term. We also set a penalized complexity prior for it as below.
+
+```{r nugprior, eval=FALSE, echo=TRUE, warning=FALSE, message=FALSE}
+tau.spec <- list(prec = list(prior = "pc.prec", param = c(1, 0.01)))
+
+```
+
+\[
+\tau_\epsilon \sim \text{PC.prec}(1, 0.01).
+\]
+
+We can summarize the priors for hyperparameters of our model.
+
+| Component | Hyperparameter | Description | Prior |
+|----------|----------------|-------------|--------|
+| BYM2 spatial | \(\phi\) | proportion structured | PC(0.5, 2/3) |
+| BYM2 spatial | \(\tau_s\) | precision | PC.prec(1, 0.01) |
+| RW1 temporal | \(\tau_\gamma\) | precision | default PC.prec |
+| ST AR1 | \(\rho\) | AR1 correlation | PC-cor1(0, 0.9) |
+| ST Besag | \(\tau_\delta\) | precision | default PC.prec |
+| White noise | \(\tau_\epsilon\) | nugget precision | PC.prec(1, 0.01) |
+
+## Model Fitting
+
+To fit the model with INLA, We first define the model as below.
+
+```{r modeldef, eval=FALSE, echo=TRUE, warning=FALSE, message=FALSE}
+formula_spacetime <- y ~ 1 +
+  density_z + inflation_z + temp_z + rain_z + 
+  f(area_id,  model = "bym2", graph = g, scale.model = TRUE, hyper = hyper_bym2) +
+  f(time_id,  model = "rw1") +
+  f(area_id2, model = "besag", graph = g, group = time_id2, 
+    control.group = list(model = "ar1", hyper = h.spec)) +
+  f(obs_id,   model = "iid", hyper = tau.spec)
+
+```
+
+Now we fit the model with following code.
+
+```{r modelfit,eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+g <- inla.read.graph("adm3.adj") #read the created graph
+
+model_pois <- inla(
+  formula_spacetime,
+  family = "poisson",
+  data   = crime_weekly,
+  control.predictor = list(compute = TRUE),
+  control.compute   = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE),
+  control.inla      = list(
+    strategy     = "simplified.laplace",
+    int.strategy = "ccd",
+    h            = 0.005,
+    tolerance    = 1e-4
+  ),
+  control.mode = list(restart = TRUE),
+  verbose = TRUE
+)
+
+saveRDS(model_pois, file = "model_pois.rds")
+
+```
+
+Here, inla() is the core function used to fit Bayesian latent Gaussian models using Integrated Nested Laplace Approximation.It needs, a model formula (formula_spacetime), likelihood (family) and a dataset (data). Further we can give other computation options also. I save the model to use later. Note that by setting control.predictor = list(compute = TRUE) we asked model to calculate fitted values (expected crime counts from the model or predicted y values) which can be used to get the residuals. By setting "control.compute   = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE)" tells INLA what model diagnostics and posterior summaries to compute. Using "control.inla" we set the approximation strategy, numerical integration, and convergence tuning.
+
+
+
+
+
+
+
+
+
+
+
