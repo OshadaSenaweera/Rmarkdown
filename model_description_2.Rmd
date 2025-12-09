@@ -1,0 +1,187 @@
+---
+title: "Spatio-Temporal Model for Sri Lanka Crime Data-2"
+output: html_document
+header-includes:
+  - \usepackage{amsmath}
+  - \usepackage{amssymb}
+  - \usepackage{mathtools}
+---
+
+## Model Interpretation
+
+We can read the fitted model back again and get the summary of the model with summary function.
+
+```{r modelsummary, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+
+model_pois <- readRDS("model_pois.rds")
+summary(model_pois)
+
+```
+
+When consider the fixed effects note that only density is the variable that is significant (95% credible interval (0.079,0.333) does not include zero). All other fixed effects are not significant.
+
+When consider the spatial random effect we used a BYM2 model. Note that the precision estimation of 1.98 which gives standard deviation of around 0.71 (1/sqrt(1.98)) which indicates moderate spatial variability. And the hyper-parameter phi indicates how the structured and unstructured (noise) spatial variability distribute. phi value of 0.48 indicates that the spatial variation is half ICAR (structured) and half IID (noise). So Sri Lanka crime shows moderate spatial clustering but also random spatial heterogeneity. When consider the national temporal trend which used a random walk model, it's hyperparameter has high precision (low variability) which indicate a smooth temporal trend. In spatio-temporal random effect, it has low precision value (0.711) and very high correlation (0.923) value. High correlation here means that  local crime patterns persist strongly, for example if Gampaha has high crime in time block k, it has high crime in block k+1. And the low precision here (standard deviation of 1.19) indicates that there is spatial effect also. When consider these hyper-parameters together, this indicate crime hotspots cluster in space and propagate through time. Among random effects in the model, it is clear that the spatio-temporal effect is the most dominant. Nugget term has relatively high precision, which indicate that crime counts have mild extra randomness not captured by the structured components of the model and this effect absorbs that noise (there maybe other fixed effects).
+
+Also model has very high effective number of parameters (10551). This is expected as we saw that spatio-temporal effect is the most dominant random effect.
+
+## Model Validation
+
+For this we can calculate the raw residual of the model as below.
+
+```{r modelresidcalc, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+library(INLA)
+# Read the original Dataset
+crime_weekly <- readRDS("crime_weekly.rds")
+# Extract predicted means (posterior expectation of fitted values)
+crime_weekly$pred_mean <- model_pois$summary.fitted.values$mean
+# Calculate raw residuals
+crime_weekly$resid <- crime_weekly$y - crime_weekly$pred_mean
+
+```
+
+Then we can plot the residuals to see whether there is any patterns.
+
+```{r modelresiduals, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+library(sf)
+library(dplyr)
+library(tmap)
+library(ggplot2)
+
+# plotting residuals with fitted value
+ggplot(crime_weekly, aes(x = pred_mean, y = resid)) +
+  geom_point(alpha = 0.3, color = "steelblue") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(x = "Predicted count", y = "Residual", title = "Residuals vs Predicted") +
+  theme_minimal()
+
+# QQ-plot for residuals
+qqnorm(crime_weekly$resid, main = "QQ-plot of Residuals")
+qqline(crime_weekly$resid, col = "red")
+
+# Plotting residuals spatially
+path <- "C:/Users/oshad/OneDrive/Documents/R/SriLanka_Admin_Boundaries"
+#path <- "C:/Users/n12300306/OneDrive - Queensland University of Technology/Documents/SriLanka_Admin_Boundaries"
+adm3_sf <- st_read(file.path(path, "lka_admbnda_adm3_slsd_20220816.shp"))  # DS Division
+
+adm3_sf <- adm3_sf %>% 
+  select(-ADM3_SI, -ADM3_TA, -ADM2_SI, -ADM2_TA, 
+         -ADM2_PCODE, -ADM1_SI, -ADM1_TA, -ADM1_PCODE, -ADM0_EN,
+         -ADM0_SI, -ADM0_TA, -ADM0_PCODE, -date, -validOn, -validTo) %>%
+  rename(area = ADM3_EN)  #remove unwanted columns and rename area column
+
+# Ensure order and geometry validity
+adm3_sf <- adm3_sf %>%
+  st_make_valid() %>%
+  arrange(area)
+
+adm3_sf$area_id = 1:339
+
+spatial_resid <- crime_weekly %>%
+  group_by(area_id) %>%
+  summarise(resid_mean = mean(resid))
+
+adm3_resid <- adm3_sf %>%
+  left_join(spatial_resid, by = "area_id")
+
+tm_shape(adm3_resid) +
+  tm_polygons("resid_mean", palette = "RdBu", style = "quantile",
+              title = "Mean Residuals (Observed - Predicted)") +
+  tm_layout(title = "Spatial distribution of model residuals")
+
+# Plotting residuals temporally 
+temporal_resid <- crime_weekly %>%
+  group_by(time_id) %>%
+  summarise(resid_total = mean(resid))
+
+ggplot(temporal_resid, aes(x = time_id, y = resid_total)) +
+  geom_line(color = "darkorange") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(x = "Week index", y = "Residual total",
+       title = "Temporal pattern of residuals") +
+  theme_minimal()
+
+```
+
+Shows there is no patterns in the residuals. Further, we can do INLA predictive checks: CPO and PIT.
+
+```{r modelcpo, eval=FALSE, echo=TRUE, warning=FALSE, message=FALSE}
+
+cpo_obj <- model_pois$cpo
+
+# Remove any NAs
+valid <- !is.na(cpo_obj$cpo) & cpo_obj$cpo > 0
+cpo_vals <- cpo_obj$cpo[valid]
+pit_vals <- cpo_obj$pit[valid]
+
+# 1. Histogram of PIT values: should be ~Uniform(0,1)
+hist(pit_vals, breaks = 20,
+     main = "PIT histogram",
+     xlab = "PIT values")
+
+# 2. Identify poorly fitted observations (small CPO)
+log_cpo <- log(cpo_vals)
+summary(log_cpo)
+
+# e.g., flag extreme low CPOs
+idx_bad <- which(cpo_vals < 1e-6)
+length(idx_bad)
+head(idx_bad)
+
+bad_points <- crime_weekly[valid, ][idx_bad, ]
+# e.g. count by area:
+bad_by_area <- bad_points %>%
+  count(area_id, sort = TRUE)
+head(bad_by_area)
+
+```
+
+# Model Prediction
+
+We can see how model prediction compared to actual and some matrics such as R-square to asses how well model predicts.
+
+```{r modelmetrics, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+library(Metrics)
+
+ggplot(crime_weekly, aes(x = y, y = pred_mean)) +
+  geom_point(alpha = 0.3, color = "steelblue") +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  labs(
+    x = "Actual weekly crime count",
+    y = "Predicted mean (INLA)",
+    title = "Actual vs Predicted Crime Counts"
+  ) +
+  theme_minimal()
+
+rmse_value <- rmse(crime_weekly$y, crime_weekly$pred_mean)
+mae_value  <- mae(crime_weekly$y, crime_weekly$pred_mean)
+r2_value   <- cor(crime_weekly$y, crime_weekly$pred_mean)^2
+
+c(RMSE = rmse_value, MAE = mae_value, R2 = r2_value)
+
+```
+
+
+# Spatial, Temporal and Spatio-temporal Effects
+
+```{r modelrandomeffects, eval=TRUE, echo=TRUE, warning=FALSE, message=FALSE}
+# Spatial effect
+spatial_field <- model_pois$summary.random$area_id[, c("ID", "mean")]
+names(spatial_field) <- c("area_id", "spatial_mean")
+
+map_spatial <- adm3_sf %>%
+  left_join(spatial_field, by = "area_id")
+tm_shape(map_spatial) +
+  tm_polygons("spatial_mean", palette = "RdBu", style = "quantile",
+              title = "Spatial effect (BYM2)") +
+  tm_layout(title = "Spatial Pattern of Crime Risk")
+
+
+# Temporal effect
+temporal <- model_pois$summary.random$time_id
+ggplot(temporal, aes(x = ID, y = mean)) +
+  geom_line(color = "darkred") +
+  geom_ribbon(aes(ymin = `0.025quant`, ymax = `0.975quant`), alpha = 0.2) +
+  labs(x = "Week index", y = "Temporal effect (RW1)",
+       title = "National temporal trend (weekly)")
+
+```
