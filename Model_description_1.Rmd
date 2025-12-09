@@ -24,13 +24,13 @@ str(crime_weekly)
 Areal or lattice data arise when a fixed domain is partitioned into a finite number of sub-regions at which outcomes are aggregated. Our dataset is a classic case of temporal areal data, which are commonly modeled using adjacency graph. Borders of Sri Lanka divisional secretariats divisions can be seen as follows.
 
 
-```{r ds_plot, echo=TRUE, warning=FALSE, message=FALSE}
+```{r ds_plot, eval=FALSE, echo=TRUE, warning=FALSE, message=FALSE}
 library(sf)
 library(dplyr)
 library(tmap)
 
-path <- "C:/Users/oshad/OneDrive/Documents/R/SriLanka_Admin_Boundaries"
-#path <- "C:/Users/n12300306/OneDrive - Queensland University of Technology/Documents/SriLanka_Admin_Boundaries"
+#path <- "C:/Users/oshad/OneDrive/Documents/R/SriLanka_Admin_Boundaries"
+path <- "C:/Users/n12300306/OneDrive - Queensland University of Technology/Documents/SriLanka_Admin_Boundaries"
 adm3_sf <- st_read(file.path(path, "lka_admbnda_adm3_slsd_20220816.shp"))  # DS Division
 
 adm3_sf <- adm3_sf %>% 
@@ -135,10 +135,7 @@ The linear predictor is:
   
     \eta_{it}
     = \beta_0 
-    + \beta_1 \, \text{density}_{i}
-    + \beta_2 \, \text{infl}_{t}
-    + \beta_3 \, \text{temp}_{it}
-    + \beta_4 \, \text{rain}_{it}
+    + \beta_{st} \, X(s,t)
     + s_i
     + \gamma_t
     + \delta_{it'}
@@ -146,9 +143,9 @@ The linear predictor is:
     
 \end{equation}
 
-where \(\beta_0\) is the intercept, \(\beta_0,\beta_1,\beta_2,\beta_3,\beta_4\) are coefficients of the random effects, which are population density (spatial only variable), inflation index (temporal only variable), temperature and rainfall (spatio-temporal variables) respectively. In addition, \(s_i,\gamma_t \,\delta_{it'}\) are the spatial random effects, temporal random effects and spatio-temporal random effects respectively. Note that in the spatio-temporal random effects, time index is adjusted from weekly to four weeks, hence \(t'\) is used there. In addition, we add a Gaussian nugget term form each observation. We will now look at each random effects in the model in more detail.
+where \(\beta_0\) is the intercept, \(\beta_{st}\) are coefficients vector of the random effects \(X_{st}\), which can be spatial, temporal or spatio-temporal (we have in our dataset population density (spatial only variable), inflation index (temporal only variable), temperature and rainfall (spatio-temporal variables)). In addition we can include fixed effects to the model \(s_i,\gamma_t \,\delta_{it}\), which are spatial effects, temporal effects and spatio-temporal effects respectively. 
 
-We are using R INLA package (reference) to fit the above model. It uses integrated nested laplacian approximation to estimate the parameters (fixed and random effects) and hyper-parameters of the model. To estimate random effects, INLA consider these to follow gaussian random markow field (GRMF), which indicate that observation is only related to its neighbors (two observations are independent if they are not neighbors).
+We are using R INLA package (reference) to fit the models. It uses integrated nested laplacian approximation to estimate the parameters (fixed and random effects) and hyper-parameters of the model. To estimate random effects, INLA consider these to follow gaussian random markow field (GRMF), which indicate that observation is only related to its neighbors (two observations are independent if they are not neighbors).
 
 ---
 ## Spatial Random Effects: BYM2
@@ -324,6 +321,85 @@ tau.spec <- list(prec = list(prior = "pc.prec", param = c(1, 0.01)))
 \tau_\epsilon \sim \text{PC.prec}(1, 0.01).
 \]
 
+## Spatio-temporal Interaction Term
+
+The spatio-temporal interaction term $\delta_{i,t'}$ is modeled using a Type I interaction in the classification of (Give reference- Knorr-Held (2000). This specification combines a spatial Besag proper conditional autoregressive (CAR) model with an independent temporal structure. It allows each temporal block to have its own spatial deviation surface, capturing short-lived, localized crime anomalies that are not explained by the main spatial or temporal components.
+
+Let $n$ denote the number of spatial areas and $T$ the number of temporal 
+blocks (e.g., 2-week or 4-week periods). 
+We stack the interaction terms into the vector
+\[
+\delta 
+= 
+(\delta_{1,1},\delta_{2,1},\ldots,\delta_{n,1},
+ \delta_{1,2},\ldots,\delta_{n,2},
+ \ldots,
+ \delta_{n,T})^\top 
+\sim 
+\mathcal{N}(0, Q_{\mathrm{ST}}^{-1} ) .
+\]
+
+\paragraph{Kronecker-product precision structure.}
+The joint precision matrix has a separable structure,
+\[
+Q_{\mathrm{ST}}
+=
+Q_{\mathrm{IID}}
+\;\otimes\;
+Q_{\mathrm{CAR}},
+\]
+where $\otimes$ denotes the Kronecker product.
+Here,
+\[
+Q_{\mathrm{IID}} = \tau_t I_T
+\]
+is the temporal precision matrix representing independent shocks across 
+time blocks, and $Q_{\mathrm{CAR}}$ is the Besag proper spatial precision matrix.
+
+\paragraph{Spatial Besag proper component.}
+For each time block $t'$, the spatial field satisfies a proper CAR model 
+with precision
+\[
+Q_{\mathrm{CAR}}(i,i) = \tau_\delta (n_i + d),
+\qquad
+Q_{\mathrm{CAR}}(i,j) = -\tau_\delta 
+\quad \text{if } i \sim j,
+\]
+and zero otherwise.
+Here $n_i$ is the number of neighbours of area $i$, 
+$\tau_\delta$ is the spatial precision hyperparameter, 
+and $d>0$ is the diagonal inflation that ensures propriety of the CAR model.
+
+\paragraph{Temporal IID component.}
+Across temporal blocks, the spatial fields are assumed independent,
+\[
+\delta^{(1)}, 
+\delta^{(2)}, 
+\ldots,
+\delta^{(T)}
+\quad \text{are IID},
+\]
+with temporal precision matrix $\tau_t I_T$. 
+This structure introduces no temporal smoothing, allowing spatial deviations 
+to appear and disappear freely from one period to the next.
+
+\paragraph{Final block-diagonal precision.}
+The full precision matrix is therefore block diagonal,
+\[
+Q_{\mathrm{ST}}
+=
+\begin{pmatrix}
+Q_{\mathrm{CAR}} & 0 & \cdots & 0 \\
+0 & Q_{\mathrm{CAR}} & \cdots & 0 \\
+\vdots & \vdots & \ddots & \vdots \\
+0 & 0 & \cdots & Q_{\mathrm{CAR}}
+\end{pmatrix},
+\]
+with one spatial CAR field for each temporal block.
+This formulation captures spatially structured short-term crime anomalies 
+without imposing temporal autocorrelation across blocks.
+
+
 We can summarize the priors for hyperparameters of our model.
 
 | Component | Hyperparameter | Description | Prior |
@@ -377,13 +453,4 @@ saveRDS(model_pois, file = "model_pois.rds")
 
 Here, inla() is the core function used to fit Bayesian latent Gaussian models using Integrated Nested Laplace Approximation.It needs, a model formula (formula_spacetime), likelihood (family) and a dataset (data). Further we can give other computation options also. I save the model to use later. Note that by setting control.predictor = list(compute = TRUE) we asked model to calculate fitted values (expected crime counts from the model or predicted y values) which can be used to get the residuals. By setting "control.compute   = list(dic = TRUE, waic = TRUE, cpo = TRUE, config = TRUE)" tells INLA what model diagnostics and posterior summaries to compute. Using "control.inla" we set the approximation strategy, numerical integration, and convergence tuning.
 
-
-
-
-
-
-
-
-
-
-
+#An intuitive Bayesian spatial model for disease mapping that accounts for scaling
