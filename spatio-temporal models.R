@@ -1,3 +1,26 @@
+library(dplyr)
+library(tidyr)
+library(sf)
+library(spdep)
+library(INLA)        # install.packages("INLA", repos=c(getOption("repos"), INLA='https://inla.r-inla-download.org/R/stable'))
+library(ggplot2)
+library(tmap)        # for mapping
+library(Metrics)
+
+################################################################################
+
+crime_weekly <- readRDS("crime_weekly_new.rds")
+
+k=2
+crime_weekly <- crime_weekly %>%
+  mutate(time_id3= ((time_id - 1) %/% k) + 1L)
+
+crime_weekly$time_id4 <- crime_weekly$time_id
+
+g <- inla.read.graph("adm3.adj") #read the created graph
+
+################################################################################
+
 
 formula_spacetime_12 <- y ~ 1 +
   f(area_id, model = "besag", graph = g, scale.model = TRUE)+
