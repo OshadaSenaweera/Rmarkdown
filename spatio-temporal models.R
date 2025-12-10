@@ -22,14 +22,14 @@ g <- inla.read.graph("adm3.adj") #read the created graph
 ################################################################################
 
 # model
-formula_spacetime_12 <- y ~ 1 +
+st_1 <- y ~ 1 +
   f(area_id, model = "besag", graph = g, scale.model = TRUE)+
   f(time_id, model = "rw1")+
-  f(area_id2, model = "besag", graph = g, group = time_id, 
+  f(area_id2, model = "besag", graph = g, group = time_id2, 
     control.group = list(model = "rw1"))
 
-m12 <- inla(
-  formula_spacetime_12,
+m_st1 <- inla(
+  st_1,
   family = "poisson",
   data = crime_weekly,
   control.predictor = list(compute = TRUE),
@@ -44,11 +44,11 @@ m12 <- inla(
   control.mode = list(restart = TRUE),
   verbose = TRUE
 )
-summary(m9)
+summary(m_st1)
 
-crime_weekly$pred_mean9 <- m9$summary.fitted.values$mean
+crime_weekly$pred_meanst1 <- m_st1$summary.fitted.values$mean
 
-ggplot(crime_weekly, aes(x = y, y = pred_mean9)) +
+ggplot(crime_weekly, aes(x = y, y = pred_meanst1)) +
   geom_point(alpha = 0.3, color = "steelblue") +
   geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
   labs(
@@ -58,14 +58,14 @@ ggplot(crime_weekly, aes(x = y, y = pred_mean9)) +
   ) +
   theme_minimal()
 
-rmse_value <- rmse(crime_weekly$y, crime_weekly$pred_mean9)
-mae_value  <- mae(crime_weekly$y, crime_weekly$pred_mean9)
-r2_value   <- cor(crime_weekly$y, crime_weekly$pred_mean9)^2
+rmse_value <- rmse(crime_weekly$y, crime_weekly$pred_meanst1)
+mae_value  <- mae(crime_weekly$y, crime_weekly$pred_meanst1)
+r2_value   <- cor(crime_weekly$y, crime_weekly$pred_meanst1)^2
 
 c(RMSE = rmse_value, MAE = mae_value, R2 = r2_value)
 
-cpo_obj_9 <- m9$cpo
-pit_vals_9 <- cpo_obj_9$pit
+cpo_obj_st1 <- m_st1$cpo
+pit_vals_st1 <- cpo_obj_st1$pit
 
 # Histogram of PIT values: should be ~Uniform(0,1)
-hist(pit_vals_9, breaks = 20, main = "PIT histogram", xlab = "PIT values")
+hist(pit_vals_st1, breaks = 20, main = "PIT histogram", xlab = "PIT values")
