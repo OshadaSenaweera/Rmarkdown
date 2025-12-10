@@ -21,7 +21,7 @@ g <- inla.read.graph("adm3.adj") #read the created graph
 
 ################################################################################
 
-
+# model
 formula_spacetime_12 <- y ~ 1 +
   f(area_id, model = "besag", graph = g, scale.model = TRUE)+
   f(time_id, model = "rw1")+
