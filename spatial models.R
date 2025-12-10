@@ -270,7 +270,7 @@ W <- sparseMatrix(i = row_id, j = col_id, x = 1, dims = c(n, n))
 C <- Diagonal(x = 1, n = nrow(adm3_sf)) - W
 
 formula_spacetime_5 <- y ~ 1 +
-  f(area_id, model = "generic1", Cmatrix = C)
+  f(area_id, model = "generic0", Cmatrix = C)
 
 m5 <- inla(
   formula_spacetime_5,
