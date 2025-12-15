@@ -25,7 +25,7 @@ g <- inla.read.graph("adm3.adj") #read the created graph
 st_1 <- y ~ 1 +
   f(area_id, model = "besag", graph = g, scale.model = TRUE)+
   f(time_id, model = "rw1")+
-  f(area_id2, model = "besag", graph = g, group = time_id2, 
+  f(area_id2, model = "besag", graph = g, group = time_id, 
     control.group = list(model = "rw1"))
 
 m_st1 <- inla(
